@@ -1,17 +1,17 @@
 version: 2.1
 
 executors:
-  metal:
+  metal_ubuntu_lts:
     docker:
-      - image: circleci/elixir:1.8.2
-      - image: circleci/postgres:9.6
-        environment:
-          MIX_ENV: test
-          POSTGRES_USER: omisego_dev
-          POSTGRES_PASSWORD: omisego_dev
-          POSTGRES_DB: omisego_test
-          CIRLCECI: true
-    working_directory: ~/src
+      - image: ubuntu:bionic
+
+  metal_ubuntu_latest:
+    docker:
+      - image: ubuntu:latest
+
+  metal_centos_8:
+    docker:
+      - image: centos:8
 
   metal_macos:
     macos:
@@ -66,18 +66,18 @@ commands:
           at: .
 
 jobs:
-  barebuild:
-    executor: metal
+  barebuild_ubuntu_lts: &barebuild
+    executor: metal_ubuntu_lts
     environment:
       MIX_ENV: test
+      MAX_NPROC: 2
     steps:
       - checkout
-      - run: echo 'export PATH=~/.cargo/bin:$PATH' >> $BASH_ENV
       - run:
           command: ./bin/setup
           no_output_timeout: 2400
       - run: make deps-elixir-omg
-      - run: ERLANG_ROCKSDB_BUILDOPTS='-j 2' make build-test
+      - run: make build-test
       - run: mix test --trace
       - run:
           name: Integration Tests
@@ -85,38 +85,19 @@ jobs:
             # Slow, serial integration test, run nightly. Here to make sure the standard `mix test --only integration` works
             export SHELL=/bin/bash
             mix test --trace --only integration
+
+  barebuild_ubuntu_latest:
+    <<: *barebuild
+    executor: metal_ubuntu_latest
+
+  barebuild_centos_8:
+    <<: *barebuild
+    executor: metal_centos_8
+
   barebuild_macos:
+    <<: *barebuild
     executor: metal_macos
-    environment:
-      MIX_ENV: test
-    steps:
-      - checkout
-      - run: echo 'export PATH=~/.cargo/bin:$PATH' >> $BASH_ENV
-      - run: |
-          brew install postgres
-          initdb /usr/local/var/postgres/data
-          pg_ctl -D /usr/local/var/postgres/data -l /tmp/postgresql.log start
-          psql template1 \<<EOF
-          CREATE USER omisego_dev WITH CREATEDB ENCRYPTED PASSWORD 'omisego_dev';
-          CREATE DATABASE omisego_dev OWNER 'omisego_dev';
-          EOF
-      - run: |
-          git clone https://github.com/asdf-vm/asdf.git ~/.asdf --branch v0.7.4
-          echo -e '\n. $HOME/.asdf/asdf.sh' >> ~/.bash_profile
-          echo -e '\n. $HOME/.asdf/completions/asdf.bash' >> ~/.bash_profile
-          source ~/.bash_profile
-          asdf plugin-add elixir https://github.com/asdf-vm/asdf-elixir.git
-          asdf plugin-add erlang https://github.com/asdf-vm/asdf-erlang.git
-          asdf install erlang 21.0
-          asdf install elixir 1.8.2
-          asdf global elixir 1.8.2
-          asdf global erlang 21.0
-      - run:
-          command: ./bin/setup
-          no_output_timeout: 2400
-      - run: make deps-elixir-omg
-      - run: ERLANG_ROCKSDB_BUILDOPTS='-j 2' make build-test
-      - run: mix test --trace
+
   build:
     executor: builder
     environment:
@@ -464,9 +445,11 @@ workflows:
   barebuild-test:
     jobs:
       - build
-      - integration_tests:
+      - barebuild_ubuntu_lts:
           requires: [build]
-      - barebuild:
+      - barebuild_ubuntu_latest:
+          requires: [build]
+      - barebuild_centos_8:
           requires: [build]
       - barebuild_macos:
           requires: [build]
