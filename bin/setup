@@ -1,168 +1,469 @@
 #!/usr/bin/env sh
+# -*- fill-column: 120; mode: sh-mode -*-
+# vim: set expandtab ts=4 sw=4 cc=120:
 #
 # Setup elixir-omg locally.
 #
-
-fancy_echo() {
-  fmt="$1"; shift
-  printf "\\n%s\\n" "$fmt" "$@"
-}
-
-install_linux_deps() {
-  LINUX_DEPS="automake autoconf autogen libtool gcc curl cmake gnupg liblz4-dev libsnappy-dev librocksdb-dev"
-  flavor=$(grep "^ID=" /etc/os-release | cut -d"=" -f 2)
-
-  echo "$flavor"
-  case $flavor in
-    debian|ubuntu)
-      eval sudo apt-get install -y "$LINUX_DEPS" libgmp-dev erlang-dev build-essential libssl-dev libncurses5-dev unzip lsb-release software-properties-common
-      ;;
-    fedora|centos)
-      eval sudo yum install "$LINUX_DEPS" gmp-devel
-      ;;
-    *)
-      fancy_echo "Unrecognized distribution $flavor"
-      exit 1
-      ;;
-  esac
-}
-
-install_linux_solc(){
-  echo "Installing Solc v0.5.11"
-  wget https://github.com/ethereum/solidity/releases/download/v0.5.11/solc-static-linux \
-  && chmod +x solc-static-linux \
-  && mv solc-static-linux solc  \
-  && sudo install -m0755 solc /usr/local/bin/solc
-}
-
-install_linux_postgres(){
-  echo "Installing Postgres 9.6."
-  echo "Adding public key 7FCC7D46ACCC4CF8 to repo."
-  sudo apt-key adv --keyserver keyserver.ubuntu.com --recv-keys 7FCC7D46ACCC4CF8
-  sudo add-apt-repository "deb http://apt.postgresql.org/pub/repos/apt/ $(lsb_release -sc)-pgdg main"
-  wget --quiet -O - https://www.postgresql.org/media/keys/ACCC4CF8.asc | sudo apt-key add -
-  sudo apt-get update
-  sudo apt-get install postgresql-9.6 -y
-  sudo apt-get install postgresql-client-9.6
-  echo "Start PG."
-  sudo service postgresql start
-  echo "Create user."
-  sudo -i -u postgres psql -c "CREATE USER omisego_dev WITH PASSWORD 'omisego_dev';"
-  echo "Grant permission."
-  sudo -i -u postgres psql -c "ALTER USER omisego_dev CREATEDB;"
-  echo "Done with PG."
-}
-
-install_linux_geth(){
-  echo "Installing Geth 1.8.27"
-  mkdir gethDownload \
-  && wget -qO- https://gethstore.blob.core.windows.net/builds/geth-linux-amd64-1.8.27-4bcc0a37.tar.gz | tar xvz -C gethDownload --strip-components 1 \
-  && cd gethDownload \
-  && mkdir -p /usr/local/bin \
-  && sudo mv geth /usr/local/bin/ \
-  && cd .. \
-  && rm -r gethDownload
-}
-
-install_linux_rocksdb(){
-  echo "Installing Rocksdb v6.2.2"
-  mkdir tmp_rocksdb \
-  && cd tmp_rocksdb \
-  && git clone https://github.com/facebook/rocksdb.git \
-  && cd rocksdb  \
-  && git checkout v6.2.2 \
-  && make shared_lib \
-  && sudo mkdir -p /usr/local/rocksdb/lib \
-  && sudo mkdir -p /usr/local/rocksdb/include \
-  && sudo cp -P librocksdb.so* /usr/local/rocksdb/lib \
-  && sudo cp -P /usr/local/rocksdb/lib/librocksdb.so* /usr/lib/ \
-  && sudo cp -rP include /usr/local/rocksdb/ \
-  && sudo cp -rP include/* /usr/include/ \
-  && cd ../../ \
-  && rm -rf tmp_rocksdb
-}
-
-install_darwin_deps(){
-    fancy_echo "Installing dependencies via brew"
-    brew bundle --file=- <<EOF
-tap "ethereum/ethereum"
-brew "automake"
-brew "autoconf"
-brew "gmp"
-brew "libtool"
-brew "cmake"
-brew "rocksdb"
-brew "solidity"
-EOF
-}
-
-install_deps() {
-  sys=$(uname -s)
-  echo "$sys"
-  case $sys in
-    Linux*)
-      install_linux_deps
-      install_linux_solc
-      install_linux_geth
-      install_linux_rocksdb
-      if [ -z "$CIRCLE_SHA1" ]; then
-        install_linux_postgres
-      else
-        echo "Skip Postgres setup, because CircleCI."
-      fi
-      ;;
-    Darwin*)
-      install_darwin_deps
-      ;;
-    *)
-      fancy_echo "Unknown system"
-      exit 1
-      ;;
-  esac
-}
-
-# Exit if any subcommand fails
 set -e
 
-install_deps
+ERLANG_VERSION=21.0
+ELIXIR_VERSION=1.8.2
 
-# Set up Elixir
-#git clone https://github.com/asdf-vm/asdf.git ~/.asdf --branch v0.7.4
-#Linux
-#echo -e '\n. $HOME/.asdf/asdf.sh' >> ~/.bashrc
-#echo -e '\n. $HOME/.asdf/completions/asdf.bash' >> ~/.bashrc
-#source ~/.bashrc
-#MacOS
-#echo -e '\n. $HOME/.asdf/asdf.sh' >> ~/.bash_profile
-#echo -e '\n. $HOME/.asdf/completions/asdf.bash' >> ~/.bash_profile
-#source ~/.bash_profile
-#Linux and MacOS
-#asdf plugin-add elixir https://github.com/asdf-vm/asdf-elixir.git
-#asdf plugin-add erlang https://github.com/asdf-vm/asdf-erlang.git
-#asdf install erlang 21.0
-#asdf install elixir 1.8.2
-#asdf global elixir 1.8.2
-#asdf global erlang 21.0
-if ! command -v mix > /dev/null; then
-  fancy_echo "It looks like you don't have Elixir installed."
-  echo "See https://asdf-vm.com/#/core-manage-asdf-vm for instructions."
-  echo "See https://github.com/asdf-vm/asdf-elixir for instructions."
-  echo "See https://github.com/asdf-vm/asdf-erlang for instructions."
-  exit 1
+ROCKSDB_VERSION=6.2.2
+ROCKSDB_SHA256=3e7365cb2a35982e95e5e5dd0b3352dc78573193dafca02788572318c38483fb
+
+SOLC_VERSION=0.5.11
+SOLC_SHA256=85fa2d4e02325fcc6413cc6536124315ccf0582d30076a2d4c35a591af2e6bb6
+
+Z3_VERSION=4.8.6
+Z3_SHA256=37922fa5085170cad6504498d9758fb63c61d5cb5b68689c11a6c5e84f0311b3
+
+ASDF_REF=v0.7.4
+ERLANG_PLUGIN_REF=274e415
+ELIXIR_PLUGIN_REF=fa76a36
+
+# Runtime Variables
+#
+
+BASE_DIR=$(cd "$(dirname "$0")/" || exit; pwd -P)
+ASDF_DIR=${ASDF_DIR:-$HOME/.asdf}
+TMP_DIR=$(mktemp -d)
+trap 'rm -rf $TMP_DIR' 0 1 2 3 6 14 15
+
+NOW=$(date +%s)
+PLATFORM=
+ARCH=
+
+c_RESET=$(tput sgr0 2>/dev/null || true)
+c_BOLD=$(tput bold 2>/dev/null || true)
+c_RED=$(tput setaf 1 2>/dev/null || true)
+c_YELLOW=$(tput setaf 3 2>/dev/null || true)
+c_CYAN=$(tput setaf 6 2>/dev/null || true)
+c_WHITE=$(tput setaf 7 2>/dev/null || true)
+
+COLS=$(tput cols 2>/dev/null || true)
+NPROC=$(nproc 2>/dev/null || true)
+
+if [ -z "$COLS" ]; then
+    COLS=79
 fi
 
-mix local.hex --force
-
-if ! command -v mix > /dev/null; then
-  fancy_echo "\`mix\`: command not found"
-  fancy_echo "Please add \`~/.mix\` to your \$PATH environment variable"
-  exit 1
+if [ -z "$NPROC" ]; then
+    NPROC=2
 fi
 
-fancy_echo "Installing elixir dependencies."
-mix local.hex --force
-mix local.rebar --force
+if [ -n "$MAX_NPROC" ] && [ "$NPROC" -gt "$MAX_NPROC" ]; then
+    NPROC="$MAX_NPROC"
+fi
 
-mix deps.get
+die() {
+    printf "%sE:%s %s\\n" "$c_RED" "$c_RESET" "$@"
+    exit 1
+}
 
-fancy_echo "You're all set!"
+header() {
+    printf "%s==>%s %s%s\\n" "$c_BOLD" "$c_WHITE" "$@" "$c_RESET"
+}
+
+message() {
+    printf "%s\\n" "$@"
+}
+
+info() {
+    printf "%sI:%s %s\\n" "$c_CYAN" "$c_RESET" "$@"
+}
+
+warn() {
+    printf "%sW:%s %s\\n" "$c_YELLOW" "$c_RESET" "$@"
+}
+
+# shellcheck disable=SC2120
+line() {
+    colc=$1
+
+    if [ -z "$colc" ]; then
+        colc="="
+    fi
+
+    printf "%s%${COLS}s%s\n" "$c_WHITE" " " "$c_RESET" | tr " " "$colc"
+}
+
+run_root() {
+    if [ "$(id -u)" = 0 ]; then
+        "$@"
+    elif command -v doas >/dev/null; then
+        doas "$@"
+    elif command -v sudo >/dev/null; then
+        sudo "$@"
+    else
+        die "Cannot escalate privileges"
+    fi
+}
+
+run_cmd() {
+    cmd=$1; shift
+
+    if [ "$(command -v "do_${cmd}_${PLATFORM}")z" != "z" ]; then
+        "do_${cmd}_${PLATFORM}" "$@"
+    elif [ "$(command -v "do_${cmd}")z" != "z" ]; then
+        "do_${cmd}" "$@"
+    else
+        die "No ${cmd} found for ${PLATFORM}"
+    fi
+}
+
+git_clone() {
+    repo=$1; shift
+    path=$1; shift
+    ref=$1
+
+    if [ -z "$ref" ]; then
+        ref=master
+    fi
+
+    if [ ! -d "$path" ]; then
+        git clone "$repo" "$path"
+        git -C "$path" checkout "$ref"
+    elif [ "$(git -C "$path" describe --all 2>&1)" = "heads/$ref" ]; then
+        git -C "$path" checkout -q "$ref"
+        git -C "$path" pull -q origin "$ref"
+        message "$path successfully updated"
+    elif [ "$(git -C "$path" describe 2>&1)" != "$ref" ] &&
+         [ "$(git -C "$path" rev-parse --short HEAD)" != "$ref" ]; then
+        git -C "$path" fetch origin
+        git -C "$path" checkout "$ref"
+    else
+        message "$path already at $ref"
+    fi
+}
+
+verify_shasum() {
+    filepath=$1; shift
+    shasum=$1; shift
+    cmd=
+
+    if command -v sha256 >/dev/null; then
+        cmd=sha256
+    elif command -v shasum >/dev/null; then
+        cmd=shasum
+    elif command -v sha256sum >/dev/null; then
+        cmd=sha256sum
+    fi
+
+    if [ -z "$cmd" ]; then
+        printe_info "No sha256 binary found, skipping checksum..."
+        return 0
+    fi
+
+    echo "$shasum  $filepath" | "$cmd" -c -
+}
+
+#
+# Sysdeps
+#
+
+do_sysdeps_debian() {
+    _delta=$((NOW - $(stat -c %Y /var/lib/apt/lists)))
+
+    if [ $_delta -gt 604800 ]; then
+        info "Package index is out-of-date, forcing repository update..."
+        run_root apt-get update
+    fi
+
+    run_root apt-get install -y \
+        autoconf \
+        automake \
+        build-essential \
+        cmake \
+        curl \
+        git \
+        libboost-all-dev \
+        libncurses5-dev \
+        libssl-dev \
+        libz3-dev \
+        python \
+        unzip
+}
+
+do_sysdeps_centos() {
+    run_root yum install -y \
+        autoconf \
+        automake \
+        boost-devel \
+        cmake \
+        curl \
+        gcc \
+        gcc-c++ \
+        git-core \
+        make \
+        ncurses-devel \
+        openssl-devel \
+        python2 \
+        unzip
+}
+
+#
+# Runtime
+#
+
+asdf_install() {
+    git_clone https://github.com/asdf-vm/asdf.git "$ASDF_DIR" "$ASDF_REF"
+
+    git_clone \
+        https://github.com/asdf-vm/asdf-erlang.git \
+        "$ASDF_DIR/plugins/erlang" \
+        "$ERLANG_PLUGIN_REF"
+
+    "$ASDF_DIR/bin/asdf" install erlang "$ERLANG_VERSION"
+    "$ASDF_DIR/bin/asdf" global erlang "$ERLANG_VERSION"
+
+    git_clone \
+        https://github.com/asdf-vm/asdf-elixir.git \
+        "$ASDF_DIR/plugins/elixir" \
+        "$ELIXIR_PLUGIN_REF"
+
+    "$ASDF_DIR/bin/asdf" install elixir "$ELIXIR_VERSION"
+    "$ASDF_DIR/bin/asdf" global elixir "$ELIXIR_VERSION"
+
+    line; message "\
+Please visit https://asdf-vm.com/#/core-manage-asdf-vm after installation
+for asdf-vm setup instructions, or add the following paths to your \$PATH:
+- $ASDF_DIR/installs/erlang/$ERLANG_VERSION/bin
+- $ASDF_DIR/installs/elixir/$ELIXIR_VERSION/bin\
+"; line # END-QUOTE
+}
+
+rocksdb_install () {
+    _url=https://github.com/facebook/rocksdb/archive/v${ROCKSDB_VERSION}.tar.gz
+
+    ( # SUBSHELL
+        [ -d /usr/local/rocksdb ] && exit
+
+        cd "$TMP_DIR" || exit 1
+        curl -fSL -o "$TMP_DIR/rocksdb-src.tar.gz" "$_url"
+        verify_shasum "rocksdb-src.tar.gz" "$ROCKSDB_SHA256"
+        mkdir -p "$TMP_DIR/rocksdb"
+        tar -xzC "$TMP_DIR/rocksdb" --strip-components=1 -f rocksdb-src.tar.gz
+        rm rocksdb-src.tar.gz
+
+        cd "$TMP_DIR/rocksdb" || exit 1
+        make -j"$NPROC" shared_lib
+        run_root mkdir -p /usr/local/rocksdb/lib
+        run_root mkdir -p /usr/local/rocksdb/include
+        run_root cp -dr librocksdb.so* /usr/local/rocksdb/lib
+        run_root cp -dr include/* /usr/local/rocksdb/include
+    ) # END-SUBSHELL
+}
+
+solc_install() {
+    _url=https://github.com/ethereum/solidity/releases/download/v${SOLC_VERSION}/solidity_${SOLC_VERSION}.tar.gz
+    _z3_url=https://github.com/Z3Prover/z3/archive/z3-${Z3_VERSION}.tar.gz
+
+    ( # SUBSHELL
+        [ -d /usr/local/z3 ] && exit
+
+        cd "$TMP_DIR" || exit 1
+        curl -fSL -o "$TMP_DIR/z3-src.tar.gz" "$_z3_url"
+        verify_shasum "z3-src.tar.gz" "$Z3_SHA256"
+        mkdir -p "$TMP_DIR/z3"
+        tar -xzC "$TMP_DIR/z3" --strip-components=1 -f z3-src.tar.gz
+        rm z3-src.tar.gz
+
+        cd "$TMP_DIR/z3" || exit 1
+        python2 scripts/mk_make.py --prefix=/usr/local/z3
+
+        cd "$TMP_DIR/z3/build" || exit 1
+        make -j"$NPROC"
+        run_root make install
+    ) # END-SUBSHELL
+
+    ( # SUBSHELL
+        [ -d /usr/local/solidity ] && exit
+
+        cd "$TMP_DIR" || exit 1
+        curl -fSL -o "$TMP_DIR/solidity-src.tar.gz" "$_url"
+        verify_shasum "solidity-src.tar.gz" "$SOLC_SHA256"
+        mkdir -p "$TMP_DIR/solidity"
+        tar -xzC "$TMP_DIR/solidity" --strip-components=1 -f solidity-src.tar.gz
+        rm solidity-src.tar.gz
+
+        mkdir -p "$TMP_DIR/solidity/build"
+        cd "$TMP_DIR/solidity/build" || exit 1
+        cmake .. \
+              -DCMAKE_BUILD_TYPE=Release \
+              -DCMAKE_PREFIX_PATH=/usr/local/z3 \
+              -DCMAKE_INSTALL_PREFIX=/usr/local/solidity
+        make -j"$NPROC"
+        run_root make install
+    ) # END-SUBSHELL
+}
+
+do_runtime_debian() {
+    # asdf_install "$@"
+    # rocksdb_install "$@"
+    solc_install "$@"
+}
+
+do_runtime_centos() {
+    # asdf_install "$@"
+    # rocksdb_install "$@"
+    solc_install "$@"
+}
+
+#
+# Subroutines
+#
+
+detect_platform() {
+    _platform=$(uname | tr '[:upper:]' '[:lower:]')
+    _arch=$(uname -m)
+
+    case $_platform in
+        darwin )
+            PLATFORM=darwin
+            OSVER=$(sw_vers -productVersion | awk -F . '{print $1"."$2}')
+
+            case "$OSVER" in
+                10.13 | 10.14 | 10.15 )
+                    :
+                    ;;
+
+                * )
+                    die "Unsupported macOS version: $OSVER"
+                    ;;
+            esac
+            ;;
+
+        linux )
+            OSVER=$(sed -n 's/^VERSION_ID=\(.*\)/\1/p' /etc/os-release 2>/dev/null | tr -d '\"' || true)
+            DISTRO=$(sed -n 's/^ID=\(.*\)/\1/p' /etc/os-release 2>/dev/null | tr -d '\"' || true)
+
+            case $DISTRO in
+                debian )
+                    PLATFORM=debian
+
+                    if [ -z "$OSVER" ]; then
+                        die "Unable to detect Debian version"
+                    fi
+
+                    case "$OSVER" in
+                        9 | 10 )
+                            :
+                            ;;
+
+                        * )
+                            die "Unsupported Debian version: $OSVER"
+                            ;;
+                    esac
+                    ;;
+
+                ubuntu )
+                    PLATFORM=debian
+
+                    if [ -z "$OSVER" ]; then
+                        die "Unable to detect Ubuntu version"
+                    fi
+
+                    case "$OSVER" in
+                        18.04 | 19.10 )
+                            :
+                            ;;
+
+                        18.10 | 19.04 )
+                            warn "Ubuntu version is out-of-date!"
+                            message "\
+It appears that you're using a non-LTS version of Ubuntu which is now
+out-of-date. This Ubuntu version is now unsupported and may not be
+extensively tested.\
+"
+                            ;;
+
+                        * )
+                            die "Unsupported Ubuntu version: $OSVER"
+                            ;;
+                    esac
+                    ;;
+
+                centos )
+                    PLATFORM=centos
+
+                    if [ -z "$OSVER" ]; then
+                        die "Unable to detect CentOS version"
+                    fi
+
+                    case "$OSVER" in
+                        8 )
+                            warn "CentOS support is experimental!"
+                            message "\
+This script will heavily modifies your system. Press Ctrl-C now if you do not
+wish to proceed. Refer to https://github.com/omisego/elixir-omg for more
+installation options.\
+"
+                            info "Sleeping for 5 seconds."
+                            sleep 5
+                            ;;
+
+                        * )
+                            die "Unsupported CentOS version: $OSVER"
+                            ;;
+                    esac
+                    ;;
+
+                * )
+                    die "Unsupported platform: $DISTRO"
+                    ;;
+            esac
+        ;;
+
+        * )
+            die "Unknown or unsupported platform: $PLATFORM"
+            ;;
+    esac
+
+    case $_arch in
+        x86_64 | amd64 )
+            ARCH=x86_64
+            ;;
+
+        * )
+            die "Unknown or unsupported architecture: $_arch"
+            ;;
+    esac
+
+    if [ -n "$DISTRO" ] && [ "$PLATFORM" != "$DISTRO" ]; then
+        message "Detected distro: $DISTRO"
+    fi
+
+    if [ -n "$OSVER" ]; then
+        message "Detected version: $OSVER"
+    fi
+
+    message "Detected platform: $PLATFORM"
+    message "Detected architecture: $ARCH"
+}
+
+main() {
+    cd "$BASE_DIR" || exit 1
+
+    if [ "$(id -u)" = 0 ]; then
+        warn "Running setup as root may have unintended consequences"
+    fi
+
+    header "Checking platform..."
+    detect_platform "$@"
+
+    header "[1/4] Installing system dependencies..."
+    run_cmd "sysdeps" "$@"
+
+    header "[2/4] Installing runtime..."
+    run_cmd "runtime" "$@"
+
+    header "[3/4] Installing external services..."
+    run_cmd "services" "$@"
+
+    header "[4/4] Installing application..."
+    run_cmd "setup" "$@"
+}
+
+main "$@"
+exit 0
