@@ -14,3 +14,13 @@ Feature: In Flight Exits
     And Bob starts a piggybacked in flight exit using his most recently prepared in flight exit data
     And Alice fully challenges Bobs most recent invalid in flight exit
     Then Alice can processes her own most recent in flight exit
+
+  Scenario: In-flight exited transaction input is not spendable
+    Given "Alice" deposits "10" ETH to the root chain
+    Then "Alice" should have "10" ETH on the child chain after finality margin
+    Given Alice creates a transaction for "5" ETH
+    And Alice starts an in flight exit from the most recently created transaction
+    Then Alice verifies its in flight exit from the most recently created transaction
+    Given Alice piggybacks output from her most recent in flight exit
+    And "Alice" in flight transaction inputs are not spendable after exit finalization
+    Then Alice can processes her own most recent in flight exit
